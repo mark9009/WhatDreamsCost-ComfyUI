@@ -27,8 +27,8 @@ All of my nodes are created with the help of AI, so there may or may not be redu
 
 ## ❓ How to install nodes
 
-- Navigate to your `/ComfyUI/custom_nodes/ folder`
-- Run `git clone https://github.com/WhatDreamscost/WhatDreamsCost-ComfyUI`
+- Navigate to your `/ComfyUI/custom_nodes/` folder
+- Run `git clone https://github.com/mark9009/WhatDreamsCost-ComfyUI`
 - Or download through the ComfyUI Manager.
 
 **❗❗IMPORTANT❗❗**
@@ -37,6 +37,20 @@ If you don't see the latest version (v1.3.5) yet in the manager then just downlo
 Also you will need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to the latest version as well. You cannot use this node without updating ComfyUI-LTXVideo!
 
 # 🔄 Recent Updates
+
+**fork improvements (mark9009)**
+  * **✨ Built-in AI Prompt Writer for LTX Director**
+    - Generate cinematic prompts directly from images inside the timeline — no external nodes required
+    - **GGUF model support** via `llama-cpp-python`: point to a `.gguf` file or a directory containing one; `mmproj` is auto-detected from the same folder (required for vision/image analysis)
+    - **HuggingFace transformers** fallback for non-GGUF models (Qwen2.5-VL-3B / 7B)
+    - **Qwen3.5-VL** fully supported: uses `Qwen35ChatHandler` with `enable_thinking=False` to suppress chain-of-thought output
+    - Model is **automatically unloaded** from VRAM/RAM after every generation to avoid memory saturation
+    - **30+ cinematic style presets** with full per-preset instructions (camera, lighting, colour grade, mood): Cinematic Drama/Epic/Intimate, Noir, Horror, Golden Hour, Music Video, Lo-fi VHS, Anime, 3D CGI, Explicit, Voyeur, Gravure, Femdom, and more
+    - Style presets are defined only in Python (`STYLE_PRESETS` dict in `ltx_prompt_writer.py`) — the JS dropdown is **populated automatically** via a `/whatdreamscost/style_presets` endpoint; no JS edits needed to add new presets
+    - **Per-segment ✨ Hint field**: a persistent input above the prompt textarea that guides the VLM for each image independently (e.g. `balletto`, `lotta`, `slow sunset walk`). The hint is **never overwritten** by generation — you can regenerate as many times as you want without retyping it
+    - **Shot Angle**, **Camera Movement**, and **Extra Instruction** dropdowns in the settings panel
+    - Settings menu: dark theme with proper contrast, scrollable, all inputs correctly styled
+    - **Standalone example workflow** with no dependency on external LTX2EasyPrompt-LD nodes
 
 **v1.3.3**
   * **LTX Director Hotfix 2**
@@ -141,7 +155,7 @@ A Complete Timeline Editor For LTX 2.3. This is the sucessor of my previous node
 - **Image to Video:** Part of the goal of this node was to make it easier to do everything, including Image to Video. It has built in resize functionality, and of course all the benifits of the prompt relay and custom audio integration.
 - **Text to Video:** Use text segments to create T2V videos. Compatible with all other features of the node.
 
-Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI/tree/main/example_workflows
+Download workflows here: https://github.com/mark9009/WhatDreamsCost-ComfyUI/tree/main/example_workflows
 
 **Tutorial videos and documentation coming soon**
 
@@ -223,7 +237,7 @@ An upgraded Load Audio node. Features a simple interface to easily trim audio. A
 This is a compact LTX 2.3 workflow for I2V and First Frame, Middle Frame, Last frame video generation.
 I seperated and organized everything into subraphs to make things as clean as possible, and added toggles to customize the workflow quickly.
 
-Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI/tree/main/example_workflows
+Download workflows here: https://github.com/mark9009/WhatDreamsCost-ComfyUI/tree/main/example_workflows
 
 Or drag and drop the image into ComfyUI to import workflow.
 
