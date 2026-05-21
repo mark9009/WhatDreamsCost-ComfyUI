@@ -47,9 +47,6 @@ VISION_SYSTEM_PROMPT = (
 # Each entry: "Preset name": "Full style instruction injected into the prompt."
 # Add new presets here — the JS dropdown is populated automatically via the
 # /whatdreamscost/style_presets endpoint; no JS edits needed.
-#
-# Style preset texts adapted from landon2022/LTX2EasyPrompt-LD
-# https://github.com/landon2022/LTX2EasyPrompt-LD
 # ---------------------------------------------------------------------------
 
 _NONE_STYLE_LABEL = "None — let VLM decide"
@@ -680,6 +677,103 @@ def _describe_image_sync(
     return result.strip()
 
 
+def _generate_text_segment_sync(
+    prev_prompt: str,
+    next_prompt: str,
+    model_id: str,
+    offline_mode: bool,
+    local_path: str,
+    global_context: str,
+    temperature: float,
+    max_tokens: int,
+    style_preset: str = _NONE_STYLE,
+    shot_angle: str = _NONE_STYLE,
+    camera_move: str = _NONE_STYLE,
+    style_extra: str = "",
+    mmproj_path: str = "",
+    segment_hint: str = "",
+) -> str:
+    """Generate a prompt for a text-only segment using prev/next context + hint."""
+
+    # Build combined context: prev/next frame the hint for the model
+    context_parts = []
+    if global_context.strip():
+        context_parts.append(f"Overall scene context: {global_context.strip()}")
+    if prev_prompt.strip():
+        context_parts.append(f"Previous scene: {prev_prompt.strip()}")
+    if next_prompt.strip():
+        context_parts.append(f"Next scene: {next_prompt.strip()}")
+    combined_context = "\n".join(context_parts)
+
+    user_text = _build_user_text(
+        combined_context, style_preset, shot_angle, camera_move, style_extra, segment_hint
+    )
+
+    # --- GGUF dispatch (text-only — no image) ---
+    gguf_file, is_gguf = _resolve_gguf_path(local_path)
+    if is_gguf and gguf_file:
+        mmproj = _find_mmproj(gguf_file, mmproj_path)
+        llm = _load_gguf_model(gguf_file, mmproj)
+
+        system_msg = {
+            "role": "system",
+            "content": "/no_think\nOutput ONLY the scene description. No reasoning, no analysis, no preamble.",
+        }
+
+        # Compact prompt: structural instruction + extracted context lines
+        compact = (
+            "/no_think\n"
+            "Write a cinematic scene description of 100-130 words for LTX-Video 2.3.\n"
+            "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
+            "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
+        )
+        context_lines = []
+        for line in user_text.splitlines():
+            s = line.strip()
+            if s and (
+                s.startswith("Overall scene context") or
+                s.startswith("Previous scene") or
+                s.startswith("Next scene") or
+                s.startswith("Specific instruction") or
+                s.startswith("- ") or
+                s.startswith("STYLE:")
+            ):
+                context_lines.append(s)
+        if context_lines:
+            compact += "\n".join(context_lines)
+
+        messages = [system_msg, {"role": "user", "content": compact}]
+        response = llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max(max_tokens, 300),
+            temperature=max(temperature, 0.01),
+        )
+        raw = response["choices"][0]["message"]["content"].strip()
+        return _strip_thinking(raw)
+
+    # --- Transformers dispatch (text-only — no image) ---
+    processor, model = _load_vision_model(model_id, offline_mode, local_path)
+    messages = [{"role": "user", "content": [{"type": "text", "text": user_text}]}]
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[text], padding=True, return_tensors="pt")
+    inputs = inputs.to(model.device)
+
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=temperature if temperature > 0 else None,
+            top_p=0.9 if temperature > 0 else None,
+            do_sample=temperature > 0,
+        )
+
+    generated = output_ids[:, inputs["input_ids"].shape[1]:]
+    result = processor.batch_decode(
+        generated, skip_special_tokens=True, clean_up_tokenization_spaces=True
+    )[0]
+    return _strip_thinking(result.strip())
+
+
 def _load_image_tensor_from_seg(seg: dict) -> torch.Tensor | None:
     image_file = seg.get("imageFile")
     if image_file:
@@ -735,17 +829,16 @@ async def handle_generate_prompts(request):
     model_id = VISION_MODELS.get(model_name, VISION_MODELS["Qwen2.5-VL-3B — Fast"])
 
     loop = asyncio.get_event_loop()
-    prompts: list[str] = []
 
+    # Pre-fill with existing prompts so pass 2 can read pass 1 results
+    prompts: list[str] = [seg.get("prompt", "") for seg in segments]
+
+    # ── Pass 1: image segments ────────────────────────────────────────────────
     for i, seg in enumerate(segments):
         tensor = _load_image_tensor_from_seg(seg)
         if tensor is None:
-            # Text-only segment — keep whatever prompt it already has
-            prompts.append(seg.get("prompt", ""))
-            continue
+            continue  # handled in pass 2
 
-        # Per-segment hint: dedicated hint field (never overwritten by generation).
-        # Falls back to empty string → only global_prompt is used.
         segment_hint = seg.get("hint", "").strip()
 
         try:
@@ -757,11 +850,46 @@ async def handle_generate_prompts(request):
                 style_preset, shot_angle, camera_move, style_extra,
                 mmproj_path, segment_hint,
             )
-            prompts.append(prompt)
-            log.info("[PromptWriter] Segment %d: %s…", i, prompt[:80])
+            prompts[i] = prompt
+            log.info("[PromptWriter] Image segment %d: %s…", i, prompt[:80])
         except Exception as e:
-            log.error("[PromptWriter] Segment %d failed: %s", i, e)
-            # Unload before returning the error too
+            log.error("[PromptWriter] Image segment %d failed: %s", i, e)
+            _unload_gguf_model()
+            _unload_vision_model()
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ── Pass 2: text segments with hint ──────────────────────────────────────
+    for i, seg in enumerate(segments):
+        if _load_image_tensor_from_seg(seg) is not None:
+            continue  # already processed in pass 1
+
+        hint = seg.get("hint", "").strip()
+        if not hint:
+            continue  # no hint → keep existing prompt unchanged
+
+        # Nearest non-empty prompt before this segment
+        prev_prompt = next(
+            (prompts[j] for j in range(i - 1, -1, -1) if prompts[j].strip()), ""
+        )
+        # Nearest non-empty prompt after this segment
+        next_prompt = next(
+            (prompts[j] for j in range(i + 1, len(prompts)) if prompts[j].strip()), ""
+        )
+
+        try:
+            prompt = await loop.run_in_executor(
+                _executor,
+                _generate_text_segment_sync,
+                prev_prompt, next_prompt,
+                model_id, offline_mode, local_path,
+                global_prompt, temperature, max_tokens,
+                style_preset, shot_angle, camera_move, style_extra,
+                mmproj_path, hint,
+            )
+            prompts[i] = prompt
+            log.info("[PromptWriter] Text segment %d: %s…", i, prompt[:80])
+        except Exception as e:
+            log.error("[PromptWriter] Text segment %d failed: %s", i, e)
             _unload_gguf_model()
             _unload_vision_model()
             return web.json_response({"error": str(e)}, status=500)
