@@ -693,7 +693,13 @@ def _generate_text_segment_sync(
     mmproj_path: str = "",
     segment_hint: str = "",
 ) -> str:
-    """Generate a prompt for a text-only segment using prev/next context + hint."""
+    """Generate a prompt for a text-only segment using prev/next context + hint.
+
+    Subject continuity rule: all physical descriptions (appearance, clothing,
+    body features) from the previous scene are carried over unchanged.
+    Only action, camera angle and environment details change per the hint.
+    This prevents LTX-Video from hallucinating/deforming characters.
+    """
 
     # Build combined context: prev/next frame the hint for the model
     context_parts = []
@@ -709,6 +715,17 @@ def _generate_text_segment_sync(
         combined_context, style_preset, shot_angle, camera_move, style_extra, segment_hint
     )
 
+    # Continuity anchor: repeat the previous prompt's subject description verbatim
+    # so the model cannot drift from established appearance/clothing/features.
+    continuity_block = ""
+    if prev_prompt.strip():
+        continuity_block = (
+            "\n\nCONTINUITY — MANDATORY: The subjects in this scene are IDENTICAL to the previous scene. "
+            "Copy their physical appearance, clothing, hair, skin tone, and body features exactly as described above. "
+            "Do NOT invent new people or alter any physical attribute. "
+            "Only their action, position, and the camera angle change."
+        )
+
     # --- GGUF dispatch (text-only — no image) ---
     gguf_file, is_gguf = _resolve_gguf_path(local_path)
     if is_gguf and gguf_file:
@@ -720,7 +737,7 @@ def _generate_text_segment_sync(
             "content": "/no_think\nOutput ONLY the scene description. No reasoning, no analysis, no preamble.",
         }
 
-        # Compact prompt: structural instruction + extracted context lines
+        # Compact prompt: structural instruction + extracted context lines + continuity
         compact = (
             "/no_think\n"
             "Write a cinematic scene description of 100-130 words for LTX-Video 2.3.\n"
@@ -741,6 +758,8 @@ def _generate_text_segment_sync(
                 context_lines.append(s)
         if context_lines:
             compact += "\n".join(context_lines)
+        if continuity_block:
+            compact += continuity_block
 
         messages = [system_msg, {"role": "user", "content": compact}]
         response = llm.create_chat_completion(
@@ -753,7 +772,8 @@ def _generate_text_segment_sync(
 
     # --- Transformers dispatch (text-only — no image) ---
     processor, model = _load_vision_model(model_id, offline_mode, local_path)
-    messages = [{"role": "user", "content": [{"type": "text", "text": user_text}]}]
+    full_text = user_text + continuity_block
+    messages = [{"role": "user", "content": [{"type": "text", "text": full_text}]}]
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = processor(text=[text], padding=True, return_tensors="pt")
     inputs = inputs.to(model.device)
