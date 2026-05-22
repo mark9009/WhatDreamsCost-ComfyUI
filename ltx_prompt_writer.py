@@ -27,7 +27,7 @@ VISION_MODELS = {
 VISION_SYSTEM_PROMPT = (
     "You are an expert cinematographer and prompt writer for LTX-Video 2.3, "
     "a state-of-the-art AI video generation model.\n\n"
-    "Analyze the image and write a single scene description of 100-130 words "
+    "Analyze the image and write a single scene description of 80-100 words "
     "optimised for video generation.\n\n"
     "Include:\n"
     "- Subjects: physical appearance, clothing, pose, expression\n"
@@ -442,7 +442,7 @@ def _describe_image_gguf_sync(
         # Compact prompt for text-only: avoids triggering long reasoning chains
         textonly_prompt = (
             "/no_think\n"
-            "Write a cinematic scene description of 100-130 words for LTX-Video 2.3.\n"
+            "Write a cinematic scene description of 80-100 words for LTX-Video 2.3.\n"
             "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
             "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
         )
@@ -458,7 +458,7 @@ def _describe_image_gguf_sync(
 
     response = llm.create_chat_completion(
         messages=messages,
-        max_tokens=max(max_tokens, 300),
+        max_tokens=max_tokens,
         temperature=max(temperature, 0.01),
     )
     raw = response["choices"][0]["message"]["content"].strip()
@@ -740,7 +740,7 @@ def _generate_text_segment_sync(
         # Compact prompt: structural instruction + extracted context lines + continuity
         compact = (
             "/no_think\n"
-            "Write a cinematic scene description of 100-130 words for LTX-Video 2.3.\n"
+            "Write a cinematic scene description of 80-100 words for LTX-Video 2.3.\n"
             "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
             "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
         )
@@ -764,7 +764,7 @@ def _generate_text_segment_sync(
         messages = [system_msg, {"role": "user", "content": compact}]
         response = llm.create_chat_completion(
             messages=messages,
-            max_tokens=max(max_tokens, 300),
+            max_tokens=max_tokens,
             temperature=max(temperature, 0.01),
         )
         raw = response["choices"][0]["message"]["content"].strip()
