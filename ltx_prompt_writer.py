@@ -27,7 +27,7 @@ VISION_MODELS = {
 VISION_SYSTEM_PROMPT = (
     "You are an expert cinematographer and prompt writer for LTX-Video 2.3, "
     "a state-of-the-art AI video generation model.\n\n"
-    "Analyze the image and write a single scene description of 80-100 words "
+    "Analyze the image and write a single concise scene description "
     "optimised for video generation.\n\n"
     "Include:\n"
     "- Subjects: physical appearance, clothing, pose, expression\n"
@@ -40,6 +40,16 @@ VISION_SYSTEM_PROMPT = (
     "- Avoid negative phrasing — describe what IS present\n"
     "- Output ONLY the scene description. No preamble, no labels, no metadata."
 )
+
+
+def _word_target(max_tokens: int) -> str:
+    """Return a word-count target string scaled to max_tokens.
+    Approx ratio: 1 token ≈ 0.65 English words.
+    The target is set at ~55-65% of max_tokens to leave room for density
+    without truncation."""
+    high = max(20, int(max_tokens * 0.60))
+    low  = max(15, int(max_tokens * 0.45))
+    return f"{low}-{high} words"
 
 # ---------------------------------------------------------------------------
 # Style presets
@@ -442,7 +452,7 @@ def _describe_image_gguf_sync(
         # Compact prompt for text-only: avoids triggering long reasoning chains
         textonly_prompt = (
             "/no_think\n"
-            "Write a cinematic scene description of 80-100 words for LTX-Video 2.3.\n"
+            f"Write a cinematic scene description of {_word_target(max_tokens)} for LTX-Video 2.3.\n"
             "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
             "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
         )
@@ -575,8 +585,9 @@ def _build_user_text(
     camera_move: str,
     style_extra: str,
     segment_hint: str = "",
+    max_tokens: int = 180,
 ) -> str:
-    text = VISION_SYSTEM_PROMPT
+    text = VISION_SYSTEM_PROMPT + f"\n- Length: {_word_target(max_tokens)}"
     if global_context.strip():
         text += f"\n\nGlobal scene context provided by the director: {global_context.strip()}"
     if segment_hint.strip():
@@ -618,7 +629,7 @@ def _describe_image_sync(
     mmproj_path: str = "",
     segment_hint: str = "",
 ) -> str:
-    user_text = _build_user_text(global_context, style_preset, shot_angle, camera_move, style_extra, segment_hint)
+    user_text = _build_user_text(global_context, style_preset, shot_angle, camera_move, style_extra, segment_hint, max_tokens)
 
     # --- GGUF dispatch ---
     gguf_file, is_gguf = _resolve_gguf_path(local_path)
@@ -712,7 +723,7 @@ def _generate_text_segment_sync(
     combined_context = "\n".join(context_parts)
 
     user_text = _build_user_text(
-        combined_context, style_preset, shot_angle, camera_move, style_extra, segment_hint
+        combined_context, style_preset, shot_angle, camera_move, style_extra, segment_hint, max_tokens
     )
 
     # Continuity anchor: repeat the previous prompt's subject description verbatim
@@ -740,7 +751,7 @@ def _generate_text_segment_sync(
         # Compact prompt: structural instruction + extracted context lines + continuity
         compact = (
             "/no_think\n"
-            "Write a cinematic scene description of 80-100 words for LTX-Video 2.3.\n"
+            f"Write a cinematic scene description of {_word_target(max_tokens)} for LTX-Video 2.3.\n"
             "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
             "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
         )
