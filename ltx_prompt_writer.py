@@ -303,6 +303,49 @@ def _find_mmproj(gguf_file: str, mmproj_hint: str = "") -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Chat handler auto-detection
+# ---------------------------------------------------------------------------
+# Maps a keyword (found in the gguf filename) to (handler_class_name, needs_enable_thinking)
+# needs_enable_thinking=True → pass enable_thinking=False to suppress CoT output
+# ---------------------------------------------------------------------------
+
+_HANDLER_MAP: list[tuple[str, str, bool]] = [
+    ("gemma",     "Gemma3ChatHandler",    False),
+    ("qwen3",     "Qwen35ChatHandler",    True),   # Qwen3.x / Qwen3.5-VL
+    ("qwen2.5",   "Qwen25VLChatHandler",  False),
+    ("qwen2_5",   "Qwen25VLChatHandler",  False),
+    ("qwen2",     "Qwen2VLChatHandler",   False),
+    ("llava-1.6", "Llava16ChatHandler",   False),
+    ("llava-1.5", "Llava15ChatHandler",   False),
+    ("llava1.6",  "Llava16ChatHandler",   False),
+    ("llava1.5",  "Llava15ChatHandler",   False),
+    ("minicpm",   "MiniCPMv26ChatHandler",False),
+    ("glm4",      "GLM41VChatHandler",    False),
+    ("moondream", "MoondreamChatHandler", False),
+]
+
+
+def _detect_handler(gguf_file: str, override: str = "") -> tuple[str, bool]:
+    """Return (handler_class_name, needs_enable_thinking) for a given gguf file.
+
+    override: user-supplied handler name from settings (bypasses auto-detect).
+    Returns ("", False) if nothing matches — caller falls back to generic loop.
+    """
+    if override.strip() and override.strip() != "Auto-detect":
+        # Find the needs_enable_thinking flag for the override name
+        for _, cls_name, nk in _HANDLER_MAP:
+            if cls_name == override.strip():
+                return cls_name, nk
+        return override.strip(), False  # unknown override — no enable_thinking
+
+    name = os.path.basename(gguf_file).lower()
+    for keyword, cls_name, nk in _HANDLER_MAP:
+        if keyword in name:
+            return cls_name, nk
+    return "", False
+
+
+# ---------------------------------------------------------------------------
 # GGUF model singleton
 # ---------------------------------------------------------------------------
 
@@ -320,10 +363,10 @@ def _unload_gguf_model() -> None:
     log.info("[PromptWriter] GGUF model unloaded.")
 
 
-def _load_gguf_model(gguf_file: str, mmproj_file: str | None):
+def _load_gguf_model(gguf_file: str, mmproj_file: str | None, handler_override: str = ""):
     global _gguf_llm, _gguf_llm_key
 
-    cache_key = f"{gguf_file}|{mmproj_file or ''}"
+    cache_key = f"{gguf_file}|{mmproj_file or ''}|{handler_override}"
     if _gguf_llm_key == cache_key:
         return _gguf_llm
 
@@ -347,29 +390,39 @@ def _load_gguf_model(gguf_file: str, mmproj_file: str | None):
     )
 
     if mmproj_file:
+        detected_name, needs_thinking_flag = _detect_handler(gguf_file, handler_override)
+
+        # Build candidate list: detected handler first, then generic fallbacks
+        if detected_name:
+            candidates = [detected_name]
+            for fb in ("Qwen35ChatHandler", "Qwen2VLChatHandler"):
+                if fb != detected_name:
+                    candidates.append(fb)
+        else:
+            candidates = ["Qwen35ChatHandler", "Qwen2VLChatHandler", "Qwen2_5VLChatHandler"]
+
         handler_cls = None
-        # Try handlers in order of preference
-        for cls_name in ("Qwen35ChatHandler", "Qwen2VLChatHandler", "Qwen2_5VLChatHandler"):
+        for cls_name in candidates:
             try:
                 from llama_cpp import llama_chat_format as _lcf
                 handler_cls = getattr(_lcf, cls_name)
-                log.info("[PromptWriter] Using %s for vision", cls_name)
+                log.info("[PromptWriter] Using handler: %s (enable_thinking_flag=%s)", cls_name, needs_thinking_flag)
                 break
             except (ImportError, AttributeError):
                 continue
 
         if handler_cls:
             try:
-                # enable_thinking=False disables chain-of-thought (Qwen3.5 specific)
+                init_kw: dict = {"clip_model_path": mmproj_file, "verbose": False}
+                if needs_thinking_flag:
+                    init_kw["enable_thinking"] = False
                 try:
-                    kwargs["chat_handler"] = handler_cls(
-                        clip_model_path=mmproj_file, verbose=False, enable_thinking=False
-                    )
+                    kwargs["chat_handler"] = handler_cls(**init_kw)
                 except TypeError:
-                    kwargs["chat_handler"] = handler_cls(
-                        clip_model_path=mmproj_file, verbose=False
-                    )
-                log.info("[PromptWriter] GGUF vision handler loaded with mmproj: %s", mmproj_file)
+                    # Handler doesn't accept some kwarg — retry without enable_thinking
+                    init_kw.pop("enable_thinking", None)
+                    kwargs["chat_handler"] = handler_cls(**init_kw)
+                log.info("[PromptWriter] Vision handler loaded with mmproj: %s", mmproj_file)
             except Exception as e:
                 log.warning("[PromptWriter] Vision handler init failed (%s: %s) — text-only", type(e).__name__, e)
         else:
@@ -423,11 +476,12 @@ def _describe_image_gguf_sync(
     user_text: str,
     temperature: float,
     max_tokens: int,
+    handler_override: str = "",
 ) -> str:
     import base64 as _b64
     import io as _sio
 
-    llm = _load_gguf_model(gguf_file, mmproj_file)
+    llm = _load_gguf_model(gguf_file, mmproj_file, handler_override)
     has_vision = mmproj_file and getattr(llm, "chat_handler", None) is not None
 
     # For thinking models (Qwen3, DeepSeek-R1, etc.) add /no_think system instruction
@@ -629,6 +683,7 @@ def _describe_image_sync(
     style_extra: str = "",
     mmproj_path: str = "",
     segment_hint: str = "",
+    handler_override: str = "",
 ) -> str:
     user_text = _build_user_text(global_context, style_preset, shot_angle, camera_move, style_extra, segment_hint, max_tokens)
 
@@ -638,7 +693,7 @@ def _describe_image_sync(
         if gguf_file:
             mmproj = _find_mmproj(gguf_file, mmproj_path)
             return _describe_image_gguf_sync(
-                image_tensor, gguf_file, mmproj, user_text, temperature, max_tokens
+                image_tensor, gguf_file, mmproj, user_text, temperature, max_tokens, handler_override
             )
         log.warning("[PromptWriter] GGUF mode detected but no .gguf file found in: %s — falling back to HuggingFace", local_path)
 
@@ -704,6 +759,7 @@ def _generate_text_segment_sync(
     style_extra: str = "",
     mmproj_path: str = "",
     segment_hint: str = "",
+    handler_override: str = "",
 ) -> str:
     """Generate a prompt for a text-only segment using prev/next context + hint.
 
@@ -742,7 +798,7 @@ def _generate_text_segment_sync(
     gguf_file, is_gguf = _resolve_gguf_path(local_path)
     if is_gguf and gguf_file:
         mmproj = _find_mmproj(gguf_file, mmproj_path)
-        llm = _load_gguf_model(gguf_file, mmproj)
+        llm = _load_gguf_model(gguf_file, mmproj, handler_override)
 
         system_msg = {
             "role": "system",
@@ -845,18 +901,19 @@ async def handle_generate_prompts(request):
     except Exception as e:
         return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
-    segments     = body.get("segments", [])
-    global_prompt = body.get("global_prompt", "")
-    model_name   = body.get("model_name", "Qwen2.5-VL-3B — Fast")
-    offline_mode = bool(body.get("offline_mode", False))
-    local_path   = body.get("local_path", "")
-    temperature  = float(body.get("temperature", 0.3))
-    max_tokens   = int(body.get("max_tokens", 180))
-    style_preset = body.get("style_preset", _NONE_STYLE)
-    shot_angle   = body.get("shot_angle",   _NONE_STYLE)
-    camera_move  = body.get("camera_move",  _NONE_STYLE)
-    style_extra  = body.get("style_extra",  "")
-    mmproj_path  = body.get("mmproj_path",  "")
+    segments         = body.get("segments", [])
+    global_prompt    = body.get("global_prompt", "")
+    model_name       = body.get("model_name", "Qwen2.5-VL-3B — Fast")
+    offline_mode     = bool(body.get("offline_mode", False))
+    local_path       = body.get("local_path", "")
+    temperature      = float(body.get("temperature", 0.3))
+    max_tokens       = int(body.get("max_tokens", 180))
+    style_preset     = body.get("style_preset", _NONE_STYLE)
+    shot_angle       = body.get("shot_angle",   _NONE_STYLE)
+    camera_move      = body.get("camera_move",  _NONE_STYLE)
+    style_extra      = body.get("style_extra",  "")
+    mmproj_path      = body.get("mmproj_path",  "")
+    handler_override = body.get("chat_handler", "Auto-detect")
 
     model_id = VISION_MODELS.get(model_name, VISION_MODELS["Qwen2.5-VL-3B — Fast"])
 
@@ -880,7 +937,7 @@ async def handle_generate_prompts(request):
                 tensor, model_id, offline_mode, local_path,
                 global_prompt, temperature, max_tokens,
                 style_preset, shot_angle, camera_move, style_extra,
-                mmproj_path, segment_hint,
+                mmproj_path, segment_hint, handler_override,
             )
             prompts[i] = prompt
             log.info("[PromptWriter] Image segment %d: %s…", i, prompt[:80])
@@ -916,7 +973,7 @@ async def handle_generate_prompts(request):
                 model_id, offline_mode, local_path,
                 global_prompt, temperature, max_tokens,
                 style_preset, shot_angle, camera_move, style_extra,
-                mmproj_path, hint,
+                mmproj_path, hint, handler_override,
             )
             prompts[i] = prompt
             log.info("[PromptWriter] Text segment %d: %s…", i, prompt[:80])
@@ -943,6 +1000,13 @@ async def handle_style_presets(request):
     return web.json_response({"presets": list(STYLE_PRESETS.keys())})
 
 
+async def handle_chat_handlers(request):
+    """Return available chat handler names for the JS dropdown."""
+    from aiohttp import web
+    names = ["Auto-detect"] + [cls_name for _, cls_name, _ in _HANDLER_MAP]
+    return web.json_response({"handlers": names})
+
+
 def register_routes() -> None:
     try:
         from server import PromptServer
@@ -952,6 +1016,9 @@ def register_routes() -> None:
         PromptServer.instance.routes.get(
             "/whatdreamscost/style_presets"
         )(handle_style_presets)
+        PromptServer.instance.routes.get(
+            "/whatdreamscost/chat_handlers"
+        )(handle_chat_handlers)
         log.info("[PromptWriter] Routes registered.")
     except Exception as e:
         log.warning("[PromptWriter] Could not register routes: %s", e)

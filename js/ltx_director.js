@@ -3762,6 +3762,28 @@ class TimelineEditor {
     });
     menu.appendChild(this._makeSettingRow("mmproj Path", mmProjInput));
 
+    // Chat Handler selector — auto-populated from /whatdreamscost/chat_handlers
+    const handlerSel = document.createElement("select");
+    handlerSel.className = "pr-settings-field";
+    handlerSel.style.width = "100%";
+    const _fillHandlerSel = (names) => {
+      handlerSel.innerHTML = "";
+      names.forEach(opt => {
+        const o = document.createElement("option");
+        o.value = opt; o.textContent = opt;
+        if (opt === (vlmCfg.chat_handler || "Auto-detect")) o.selected = true;
+        handlerSel.appendChild(o);
+      });
+    };
+    api.fetchApi("/whatdreamscost/chat_handlers")
+      .then(r => r.json())
+      .then(d => { if (d.handlers?.length) _fillHandlerSel(d.handlers); })
+      .catch(() => _fillHandlerSel(["Auto-detect"]));
+    handlerSel.addEventListener("change", () => {
+      const c = this._getVlmConfig(); c.chat_handler = handlerSel.value; this._setVlmConfig(c);
+    });
+    menu.appendChild(this._makeSettingRow("Chat Handler", handlerSel));
+
     // --- Style Directives ---
     const styleDivider = document.createElement("hr");
     styleDivider.className = "pr-settings-divider";
@@ -3909,6 +3931,7 @@ class TimelineEditor {
       offline_mode: raw.offline_mode ?? false,
       local_path:   raw.local_path   ?? "",
       mmproj_path:  raw.mmproj_path  ?? "",
+      chat_handler: raw.chat_handler ?? "Auto-detect",
       style_preset: raw.style_preset ?? "None — let VLM decide",
       shot_angle:   raw.shot_angle   ?? "None — let VLM decide",
       camera_move:  raw.camera_move  ?? "None — let VLM decide",
@@ -3959,6 +3982,7 @@ class TimelineEditor {
         offline_mode:  cfg.offline_mode,
         local_path:    cfg.local_path,
         mmproj_path:   cfg.mmproj_path,
+        chat_handler:  cfg.chat_handler,
         style_preset:  cfg.style_preset,
         shot_angle:    cfg.shot_angle,
         camera_move:   cfg.camera_move,
