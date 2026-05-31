@@ -2919,7 +2919,9 @@ class TimelineEditor {
       const clippedLength = clippedEnd - seg.start;
 
       contiguousLengths.push(clippedLength + pendingGap);
-      contiguousPrompts.push(seg.prompt || "");
+      // Replace pipe characters to prevent false splits on the Python side
+      // (local_prompts uses "|" as segment separator)
+      contiguousPrompts.push((seg.prompt || "").replaceAll("|", "｜"));
       pendingGap = 0;
       currentCursor = seg.start + seg.length; // advance by the real (unclipped) end for gap detection
     }
