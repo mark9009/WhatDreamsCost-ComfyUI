@@ -266,8 +266,11 @@ def _resolve_gguf_path(local_path: str) -> tuple[str | None, bool]:
     """Returns (gguf_file, is_gguf_mode).
 
     is_gguf_mode is True when local_path is a .gguf file directly, or a
-    directory that contains .gguf files but no config.json (i.e. not a
-    HuggingFace transformers snapshot).
+    directory that contains .gguf files.  .gguf files always take priority
+    over config.json — a directory can contain both (e.g. a README/config
+    shipped alongside the quantised model) and still be GGUF mode.
+    Only falls back to HuggingFace transformers when there are NO .gguf
+    files but a config.json is present.
     """
     if not local_path:
         return None, False
@@ -277,8 +280,6 @@ def _resolve_gguf_path(local_path: str) -> tuple[str | None, bool]:
     if os.path.isfile(lp) and lp.lower().endswith(".gguf"):
         return lp, True
     if os.path.isdir(lp):
-        if os.path.exists(os.path.join(lp, "config.json")):
-            return None, False  # valid transformers dir — not GGUF mode
         candidates = sorted(
             [f for f in os.listdir(lp)
              if f.lower().endswith(".gguf") and "mmproj" not in f.lower()],
