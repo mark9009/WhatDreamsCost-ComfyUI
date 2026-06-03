@@ -47,14 +47,18 @@ It took like 5 tries but I finally got it working 🤦‍♂️
     - Generate cinematic prompts directly from images inside the timeline — no external nodes required
     - **GGUF model support** via `llama-cpp-python`: point to a `.gguf` file or a directory containing one; `mmproj` is auto-detected from the same folder (required for vision/image analysis)
     - **HuggingFace transformers** fallback for non-GGUF models (Qwen2.5-VL-3B / 7B)
-    - **Qwen3.5-VL** fully supported: uses `Qwen35ChatHandler` with `enable_thinking=False` to suppress chain-of-thought output
+    - **Multi-architecture chat handler auto-detection**: handler is automatically selected from the model filename — Gemma3, Qwen3.5-VL, Qwen2.5-VL, LLaVA 1.5/1.6, MiniCPM, GLM4 and more. Manual **Chat Handler** override dropdown in settings for edge cases
+    - **Qwen3.5-VL** and **Gemma3** fully supported with correct per-architecture handler and `enable_thinking=False` only where needed
     - Model is **automatically unloaded** from VRAM/RAM after every generation to avoid memory saturation
-    - **30+ cinematic style presets** with full per-preset instructions (camera, lighting, colour grade, mood): Cinematic Drama/Epic/Intimate, Noir, Horror, Golden Hour, Music Video, Lo-fi VHS, Anime, 3D CGI, Explicit, Voyeur, Gravure, Femdom, and more
-    - Style presets are defined only in Python (`STYLE_PRESETS` dict in `ltx_prompt_writer.py`) — the JS dropdown is **populated automatically** via a `/whatdreamscost/style_presets` endpoint; no JS edits needed to add new presets
-    - **Per-segment ✨ Hint field**: a persistent input above the prompt textarea that guides the VLM for each image independently (e.g. `balletto`, `lotta`, `slow sunset walk`). The hint is **never overwritten** by generation — you can regenerate as many times as you want without retyping it
+    - **30+ cinematic style presets** with full per-preset instructions (camera, lighting, colour grade, mood): Cinematic Drama/Epic/Intimate, Noir, Horror, Golden Hour, Music Video, Lo-fi VHS, Anime, 3D CGI, Explicit, Voyeur, Gravure, Femdom, and more. Style presets defined only in Python — JS dropdown auto-populated, no JS edits needed to add new ones
+    - **Per-segment ✨ Hint field**: a persistent input above the prompt textarea that guides the VLM per image independently. Never overwritten by generation — regenerate freely without retyping
+    - **Text segment generation** (two-pass): text-only segments with a hint get a generated prompt using the previous scene as context and the next scene as destination. Subject continuity enforced — appearance/clothing copied from adjacent image segments to prevent deformed characters
+    - **Dynamic word-count target** scaled to `max_tokens` setting — model writes concisely instead of being truncated mid-sentence
     - **Shot Angle**, **Camera Movement**, and **Extra Instruction** dropdowns in the settings panel
     - Settings menu: dark theme with proper contrast, scrollable, all inputs correctly styled
+    - **Pipe character sanitisation** in prompts — prevents `segment_lengths / local_prompts` count mismatch when LLMs generate pipe characters
     - **Standalone example workflow** with no dependency on external LTX2EasyPrompt-LD nodes
+    - Style preset texts adapted from [landon2022/LTX2EasyPrompt-LD](https://github.com/landon2022/LTX2EasyPrompt-LD) with attribution
 
 **v1.3.3**
   * **LTX Director Hotfix 2**
