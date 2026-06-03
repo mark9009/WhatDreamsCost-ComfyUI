@@ -484,21 +484,47 @@ def _describe_image_gguf_sync(
     llm = _load_gguf_model(gguf_file, mmproj_file, handler_override)
     has_vision = mmproj_file and getattr(llm, "chat_handler", None) is not None
 
-    # For thinking models (Qwen3, DeepSeek-R1, etc.) add /no_think system instruction
-    system_msg = {"role": "system", "content": "/no_think\nOutput ONLY the scene description. No reasoning, no analysis, no preamble."}
+    # VISION_SYSTEM_PROMPT goes into the system role so the user message focuses on
+    # director context/hints — the model gives them full attention, not the image alone.
+    system_msg = {
+        "role": "system",
+        "content": (
+            "/no_think\n"
+            + VISION_SYSTEM_PROMPT
+            + "\nOutput ONLY the scene description. No reasoning, no analysis, no preamble."
+        ),
+    }
 
     if has_vision:
         pil = _tensor_to_pil(image_tensor)
         buf = _sio.BytesIO()
         pil.save(buf, format="JPEG", quality=90)
         img_b64 = _b64.b64encode(buf.getvalue()).decode()
+        # Strip the VISION_SYSTEM_PROMPT header from user_text — it's already in system_msg.
+        # Keep only the directives: IMPORTANT block, Specific instruction, style, shot directives.
+        directive_lines = []
+        for line in user_text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if (
+                s.startswith("IMPORTANT") or
+                s.startswith("Specific instruction") or
+                s.startswith("STYLE:") or
+                s.startswith("- Shot angle") or
+                s.startswith("- Camera movement") or
+                s.startswith("- Additional") or
+                s.startswith("- Length")
+            ):
+                directive_lines.append(s)
+        directives_text = "\n".join(directive_lines) if directive_lines else ""
         messages = [
             system_msg,
             {
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": user_text},
+                    {"type": "text", "text": directives_text or "Describe this scene."},
                 ],
             },
         ]
@@ -512,11 +538,17 @@ def _describe_image_gguf_sync(
             "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
         )
         if user_text:
-            # Append context/style lines from the original prompt (skip the verbose system block)
+            # Extract directive lines (skip the verbose VISION_SYSTEM_PROMPT header block)
             extra = []
             for line in user_text.splitlines():
-                if line.startswith("Global scene context") or line.startswith("- "):
-                    extra.append(line)
+                s = line.strip()
+                if s and (
+                    s.startswith("IMPORTANT") or
+                    s.startswith("Specific instruction") or
+                    s.startswith("- ") or
+                    s.startswith("STYLE:")
+                ):
+                    extra.append(s)
             if extra:
                 textonly_prompt += "\n".join(extra)
         messages = [system_msg, {"role": "user", "content": textonly_prompt}]
@@ -644,9 +676,9 @@ def _build_user_text(
 ) -> str:
     text = VISION_SYSTEM_PROMPT + f"\n- Length: {_word_target(max_tokens)}"
     if global_context.strip():
-        text += f"\n\nGlobal scene context provided by the director: {global_context.strip()}"
+        text += f"\n\nIMPORTANT — Director's action/context (MUST be incorporated into the description):\n{global_context.strip()}"
     if segment_hint.strip():
-        text += f"\n\nSpecific instruction for this scene: {segment_hint.strip()}"
+        text += f"\n\nSpecific instruction for this scene (MUST be reflected): {segment_hint.strip()}"
 
     # Full style preset text (from STYLE_PRESETS dict) takes priority
     preset_text = STYLE_PRESETS.get(style_preset, "")
@@ -816,6 +848,8 @@ def _generate_text_segment_sync(
         for line in user_text.splitlines():
             s = line.strip()
             if s and (
+                s.startswith("IMPORTANT") or
+                s.startswith("Global scene context") or
                 s.startswith("Overall scene context") or
                 s.startswith("Previous scene") or
                 s.startswith("Next scene") or
