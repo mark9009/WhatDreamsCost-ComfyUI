@@ -33,10 +33,14 @@ All of my nodes are created with the help of AI, so there may or may not be redu
 
 **❗❗IMPORTANT❗❗**
 
-If you don't see the latest version (v1.3.5) yet in the manager then just downloaded the nightly version (or fetch the updates to update the list to see the latest version). 
+If you don't see the latest version (v1.3.9) yet in the manager then just download the nightly version (or fetch the updates to update the list to see the latest version). 
 Also you will need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to the latest version as well. You cannot use this node without updating ComfyUI-LTXVideo!
 
 # 🔄 Recent Updates
+**v1.3.9**
+  * **Fixed recent updates not showing in the manager**
+
+It took like 5 tries but I finally got it working 🤦‍♂️
 
 **fork improvements (mark9009)**
   * **✨ Built-in AI Prompt Writer for LTX Director**
@@ -239,14 +243,12 @@ I seperated and organized everything into subraphs to make things as clean as po
 
 Download workflows here: https://github.com/mark9009/WhatDreamsCost-ComfyUI/tree/main/example_workflows
 
-Or drag and drop the image into ComfyUI to import workflow.
-
 # ❗ Known Issues
 
 Fixed everything so far. If there are any other issue or bugs you find please let me know!
 
 # 💡 Additional Info
 
-I made these nodes knowing little about python and a beginner level understanding of javascript. Feel free to suggest improvements, and if you run into any bugs let me know.
+Feel free to suggest improvements, and if you run into any bugs let me know!
 
 For those asking, I mainly used gemini to create these nodes.
