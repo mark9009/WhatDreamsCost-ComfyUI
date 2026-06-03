@@ -484,74 +484,85 @@ def _describe_image_gguf_sync(
     llm = _load_gguf_model(gguf_file, mmproj_file, handler_override)
     has_vision = mmproj_file and getattr(llm, "chat_handler", None) is not None
 
-    # VISION_SYSTEM_PROMPT goes into the system role so the user message focuses on
-    # director context/hints — the model gives them full attention, not the image alone.
-    system_msg = {
-        "role": "system",
-        "content": (
-            "/no_think\n"
-            + VISION_SYSTEM_PROMPT
-            + "\nOutput ONLY the scene description. No reasoning, no analysis, no preamble."
-        ),
-    }
+    # Detect if this is a Gemma model — Gemma3's chat template does NOT support a
+    # dedicated system role; system messages are silently dropped or mis-formatted.
+    # For Gemma we merge everything into the user message instead.
+    detected_handler, _ = _detect_handler(gguf_file, handler_override)
+    is_gemma = "gemma" in (detected_handler or "").lower() or "gemma" in gguf_file.lower()
+
+    # Extract directive lines from user_text (global context, hint, style, shot directives).
+    # These are the lines that MUST reach the model — VISION_SYSTEM_PROMPT generic header
+    # goes into system (for non-Gemma) or is prepended to user text (for Gemma).
+    directive_lines = []
+    for line in user_text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if (
+            s.startswith("IMPORTANT") or
+            s.startswith("Specific instruction") or
+            s.startswith("STYLE:") or
+            s.startswith("- Shot angle") or
+            s.startswith("- Camera movement") or
+            s.startswith("- Additional") or
+            s.startswith("- Length")
+        ):
+            directive_lines.append(s)
+    directives_text = "\n".join(directive_lines)
+
+    if is_gemma:
+        # Gemma3: no system role — merge VISION_SYSTEM_PROMPT + directives into user message.
+        # Structure: [image] → compact instructions → IMPORTANT context → specific directives
+        gemma_instructions = (
+            f"You are an expert cinematographer. Analyze the image and write a single cinematic "
+            f"scene description of {_word_target(max_tokens)} for LTX-Video 2.3. "
+            "Present tense. Include subjects, environment, lighting, camera angle and movement. "
+            "Output ONLY the description — no preamble, no labels, no metadata."
+        )
+        if directives_text:
+            gemma_instructions += "\n\n" + directives_text
+        system_msgs: list = []
+        user_content_text = gemma_instructions
+    else:
+        # Non-Gemma: VISION_SYSTEM_PROMPT in system role, directives only in user message.
+        system_msgs = [{
+            "role": "system",
+            "content": (
+                "/no_think\n"
+                + VISION_SYSTEM_PROMPT
+                + "\nOutput ONLY the scene description. No reasoning, no analysis, no preamble."
+            ),
+        }]
+        user_content_text = directives_text or "Describe this scene."
 
     if has_vision:
         pil = _tensor_to_pil(image_tensor)
         buf = _sio.BytesIO()
         pil.save(buf, format="JPEG", quality=90)
         img_b64 = _b64.b64encode(buf.getvalue()).decode()
-        # Strip the VISION_SYSTEM_PROMPT header from user_text — it's already in system_msg.
-        # Keep only the directives: IMPORTANT block, Specific instruction, style, shot directives.
-        directive_lines = []
-        for line in user_text.splitlines():
-            s = line.strip()
-            if not s:
-                continue
-            if (
-                s.startswith("IMPORTANT") or
-                s.startswith("Specific instruction") or
-                s.startswith("STYLE:") or
-                s.startswith("- Shot angle") or
-                s.startswith("- Camera movement") or
-                s.startswith("- Additional") or
-                s.startswith("- Length")
-            ):
-                directive_lines.append(s)
-        directives_text = "\n".join(directive_lines) if directive_lines else ""
-        messages = [
-            system_msg,
+        messages = system_msgs + [
             {
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": directives_text or "Describe this scene."},
+                    {"type": "text", "text": user_content_text},
                 ],
             },
         ]
     else:
         log.info("[PromptWriter] GGUF text-only mode (no mmproj — image not analysed)")
-        # Compact prompt for text-only: avoids triggering long reasoning chains
-        textonly_prompt = (
-            "/no_think\n"
-            f"Write a cinematic scene description of {_word_target(max_tokens)} for LTX-Video 2.3.\n"
-            "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
-            "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
-        )
-        if user_text:
-            # Extract directive lines (skip the verbose VISION_SYSTEM_PROMPT header block)
-            extra = []
-            for line in user_text.splitlines():
-                s = line.strip()
-                if s and (
-                    s.startswith("IMPORTANT") or
-                    s.startswith("Specific instruction") or
-                    s.startswith("- ") or
-                    s.startswith("STYLE:")
-                ):
-                    extra.append(s)
-            if extra:
-                textonly_prompt += "\n".join(extra)
-        messages = [system_msg, {"role": "user", "content": textonly_prompt}]
+        if is_gemma:
+            textonly_prompt = user_content_text
+        else:
+            textonly_prompt = (
+                "/no_think\n"
+                f"Write a cinematic scene description of {_word_target(max_tokens)} for LTX-Video 2.3.\n"
+                "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
+                "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
+            )
+            if directives_text:
+                textonly_prompt += directives_text
+        messages = system_msgs + [{"role": "user", "content": textonly_prompt}]
 
     response = llm.create_chat_completion(
         messages=messages,
@@ -832,18 +843,10 @@ def _generate_text_segment_sync(
         mmproj = _find_mmproj(gguf_file, mmproj_path)
         llm = _load_gguf_model(gguf_file, mmproj, handler_override)
 
-        system_msg = {
-            "role": "system",
-            "content": "/no_think\nOutput ONLY the scene description. No reasoning, no analysis, no preamble.",
-        }
+        detected_handler, _ = _detect_handler(gguf_file, handler_override)
+        is_gemma = "gemma" in (detected_handler or "").lower() or "gemma" in gguf_file.lower()
 
-        # Compact prompt: structural instruction + extracted context lines + continuity
-        compact = (
-            "/no_think\n"
-            f"Write a cinematic scene description of {_word_target(max_tokens)} for LTX-Video 2.3.\n"
-            "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
-            "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
-        )
+        # Extract context lines from user_text
         context_lines = []
         for line in user_text.splitlines():
             s = line.strip()
@@ -858,12 +861,28 @@ def _generate_text_segment_sync(
                 s.startswith("STYLE:")
             ):
                 context_lines.append(s)
-        if context_lines:
-            compact += "\n".join(context_lines)
-        if continuity_block:
-            compact += continuity_block
 
-        messages = [system_msg, {"role": "user", "content": compact}]
+        # Compact base instruction
+        compact_header = (
+            f"Write a cinematic scene description of {_word_target(max_tokens)} for LTX-Video 2.3.\n"
+            "Present tense. Include subjects, environment, lighting, camera angle and movement.\n"
+            "Output ONLY the description, no titles, no analysis, no preamble.\n\n"
+        )
+        compact_body = "\n".join(context_lines)
+        if continuity_block:
+            compact_body += continuity_block
+
+        if is_gemma:
+            # Gemma3: no system role — put everything into user message
+            compact = compact_header + compact_body
+            messages = [{"role": "user", "content": compact}]
+        else:
+            system_msg = {
+                "role": "system",
+                "content": "/no_think\nOutput ONLY the scene description. No reasoning, no analysis, no preamble.",
+            }
+            compact = "/no_think\n" + compact_header + compact_body
+            messages = [system_msg, {"role": "user", "content": compact}]
         response = llm.create_chat_completion(
             messages=messages,
             max_tokens=max_tokens,
